@@ -1,10 +1,9 @@
 #[macro_use]
 extern crate anyhow;
 
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, HttpRequest};
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use anyhow::Error;
 use lazy_static::lazy_static;
-use reqwest::header::HeaderValue;
 use silicon as si;
 use silicon::utils::ToRgba;
 use std::collections::HashSet;
@@ -12,7 +11,6 @@ use std::io::Cursor;
 use std::num::ParseIntError;
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use umami_metrics::Umami;
 
 mod config;
 mod rgba;
@@ -21,14 +19,6 @@ lazy_static! {
     static ref HIGHLIGHTING_ASSETS: si::assets::HighlightingAssets =
         silicon::assets::HighlightingAssets::new();
 }
-
-lazy_static! {
-    static ref UMAMI: Option<Umami> = match (std::env::var("UMAMI_WEBSITE_ID"), std::env::var("UMAMI_URL")) {
-        (Ok(website_id), Ok(url)) => Some(Umami::new(website_id, url)),
-        _ => None,
-    };
-}
-
 macro_rules! unwrap_or_return {
     ( $e:expr, $r:expr ) => {
         match $e {
@@ -36,33 +26,6 @@ macro_rules! unwrap_or_return {
             Err(_) => return $r,
         }
     };
-}
-
-async fn pageview(path: &str, request: &HttpRequest) {
-    let um = &*UMAMI;
-    match um {
-        Some(um) => {
-            let referrer = request.headers().get("Referer").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            let hostname = request.headers().get("Host").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            let language = request.headers().get("Accept-Language").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            let screen = request.headers().get("Screen").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            _ = um.pageview(path.to_owned(), referrer, hostname, language, screen).await;
-        },
-        None => (),
-    }
-}
-
-async fn event(path: &str, event_type: &str, event_value: &str, request: &HttpRequest) {
-    let um = &*UMAMI;
-    match um {
-        Some(um) => {
-            let hostname = request.headers().get("Host").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            let language = request.headers().get("Accept-Language").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            let screen = request.headers().get("Screen").unwrap_or(&HeaderValue::from_static("")).to_str().unwrap().to_owned();
-            _ = um.event(path.to_owned(), event_type.to_owned(), event_value.to_owned(), hostname, language, screen).await;
-        },
-        None => (),
-    }
 }
 
 fn parse_font_str(s: &str) -> Vec<(String, f32)> {
@@ -105,7 +68,7 @@ fn parse_str_color(s: &str) -> Result<rgba::Rgba, Error> {
 }
 
 #[get("/")]
-async fn help(request: HttpRequest) -> impl Responder {
+async fn help() -> impl Responder {
     // Respond with some help text for how to use the API,
     // formatted as JSON since this is an API.
     let json = r#"
@@ -145,23 +108,21 @@ async fn help(request: HttpRequest) -> impl Responder {
       }
     "#;
 
-    pageview("/", &request).await;
     HttpResponse::Ok()
         .append_header(("Content-Type", "application/json"))
         .body(json)
 }
 
 #[get("/themes")]
-async fn themes(request: HttpRequest) -> impl Responder {
+async fn themes() -> impl Responder {
     let ha = &*HIGHLIGHTING_ASSETS;
     let themes = &ha.theme_set.themes;
     let theme_keys: Vec<String> = themes.keys().map(|s| s.to_string()).collect();
-    pageview("/themes", &request).await;
     HttpResponse::Ok().json(theme_keys)
 }
 
 #[get("/languages")]
-async fn languages(request: HttpRequest) -> impl Responder {
+async fn languages() -> impl Responder {
     let ha = &*HIGHLIGHTING_ASSETS;
     let syntaxes = &ha.syntax_set.syntaxes();
     let mut languages = syntaxes
@@ -171,22 +132,19 @@ async fn languages(request: HttpRequest) -> impl Responder {
     let unique_languages: HashSet<String> = languages.drain(..).collect();
     let mut unique_languages: Vec<String> = unique_languages.into_iter().collect();
     unique_languages.sort();
-    pageview("/languages", &request).await;
     HttpResponse::Ok().json(unique_languages)
 }
 
 #[get("/fonts")]
-async fn fonts(request: HttpRequest) -> impl Responder {
+async fn fonts() -> impl Responder {
     let source = font_kit::source::SystemSource::new();
     let fonts = source.all_families().unwrap_or_default();
-    pageview("/fonts", &request).await;
     HttpResponse::Ok().json(fonts)
 }
 
 #[get("/generate")]
-async fn generate(request: HttpRequest, info: web::Query<config::ConfigQuery>) -> impl Responder {
+async fn generate(info: web::Query<config::ConfigQuery>) -> impl Responder {
     let ha = &*HIGHLIGHTING_ASSETS;
-    pageview("/generate", &request).await;
 
     let (ps, ts) = (&ha.syntax_set, &ha.theme_set);
 
@@ -301,31 +259,6 @@ async fn generate(request: HttpRequest, info: web::Query<config::ConfigQuery>) -
             .append_header(("Content-Type", "application/json"))
             .body(r#"{"error": "Failed to write image"}"#)
     );
-
-    event("/generate", "generation", r#"
-        {
-            "code": "The code to generate an image from. Required.",
-            "language": "The language to use for syntax highlighting. Optional, will attempt to guess if not provided.",
-            "theme": "The theme to use for syntax highlighting. Optional, defaults to Dracula.",
-            "font": "The font to use. Optional, defaults to Fira Code.",
-            "shadow_color": "The color of the shadow. Optional, defaults to transparent.",
-            "background": "The background color. Optional, defaults to transparent.",
-            "tab_width": "The tab width. Optional, defaults to 4.",
-            "line_pad": "The line padding. Optional, defaults to 2.",
-            "line_offset": "The line offset. Optional, defaults to 1.",
-            "window_title": "The window title. Optional, defaults to \"Inkify\".",
-            "no_line_number": "Whether to hide the line numbers. Optional, defaults to false.",
-            "no_round_corner": "Whether to round the corners. Optional, defaults to false.",
-            "no_window_controls": "Whether to hide the window controls. Optional, defaults to false.",
-            "shadow_blur_radius": "The shadow blur radius. Optional, defaults to 0.",
-            "shadow_offset_x": "The shadow offset x. Optional, defaults to 0.",
-            "shadow_offset_y": "The shadow offset y. Optional, defaults to 0.",
-            "pad_horiz": "The horizontal padding. Optional, defaults to 80.",
-            "pad_vert": "The vertical padding. Optional, defaults to 100.",
-            "highlight_lines": "The lines to highlight. Optional, defaults to none.",
-            "background_image": "The background image for the padding area as a URL. Optional, defaults to none."
-        }
-    "#, &request).await;
 
     // Return the image as a PNG.
     HttpResponse::Ok()
