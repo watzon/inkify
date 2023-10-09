@@ -1246,6 +1246,7 @@ dependencies = [
  "structopt",
  "syntect",
  "thiserror",
+ "umami_metrics",
 ]
 
 [[package]]
@@ -2635,6 +2636,18 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+
+[[package]]
+name = "umami_metrics"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbc9ec451bb0504e32cafb076fe46e0126c70ad167846e3de02f0a2bbebc6839"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "unicode-bidi"
