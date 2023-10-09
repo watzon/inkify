@@ -111,7 +111,6 @@ async fn help(request: HttpRequest) -> impl Responder {
     let json = r#"
     {
         "message": "Hello, world! Welcome to Inkify, a simple API for generating images from code. Think of it like Carbon in API form.",
-        "github": "https://github.com/watzon/inkify",
         "routes": {
           "GET /": "This help text. Will always return 200, so you can use it to check if the server is up.",
           "GET /themes": "Return a list of available syntax themes.",
