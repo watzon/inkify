@@ -85,7 +85,7 @@ async fn help() -> impl Responder {
                 "code": "The code to generate an image from. Required.",
                 "language": "The language to use for syntax highlighting. Optional, will attempt to guess if not provided.",
                 "theme": "The theme to use for syntax highlighting. Optional, defaults to Dracula.",
-                "font": "The font to use. Optional, defaults to Fira Code.",
+                "font": "The font to use. Optional.",
                 "shadow_color": "The color of the shadow. Optional, defaults to transparent.",
                 "background": "The background color. Optional, defaults to transparent.",
                 "tab_width": "The tab width. Optional, defaults to 4.",

@@ -1,17 +1,17 @@
+use anyhow::Error;
 use silicon::formatter::{ImageFormatter, ImageFormatterBuilder};
 use silicon::utils::{Background, ShadowAdder};
+use std::io::Write;
 use std::path::PathBuf;
-use anyhow::Error;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
-use crate::rgba::{Rgba, ImageRgba};
+use crate::rgba::{ImageRgba, Rgba};
 
 type FontList = Vec<(String, f32)>;
 type Lines = Vec<u32>;
 
-#[derive(Debug, Clone)]
-#[derive(serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Config {
     /// Background image URL
     pub background_image: Option<Vec<u8>>,
@@ -71,7 +71,7 @@ pub struct Config {
     pub tab_width: u8,
 
     /// The syntax highlight theme. It can be a theme name or path to a .tmTheme file.
-    pub theme: String
+    pub theme: String,
 }
 
 impl Config {
@@ -96,20 +96,29 @@ impl Config {
             shadow_offset_y: 0,
             shadow_offset_x: 0,
             tab_width: 4,
-            theme: "Dracula".to_owned()
+            theme: "Dracula".to_owned(),
         }
     }
 
     pub fn language<'a>(&self, ps: &'a SyntaxSet) -> Result<&'a SyntaxReference, Error> {
-        let possible_language = self.language.as_ref().map(|language| {
-            ps.find_syntax_by_token(language)
-                .ok_or_else(|| format_err!("Unable to determine language, please provide one explicitly"))
-        });
-
-        let language = possible_language.unwrap_or_else(|| {
-            ps.find_syntax_by_first_line(self.code.as_ref())
-                .ok_or_else(|| format_err!("Unable to determine language, please provide one explicitly"))
-        })?;
+        let language = match &self.language {
+            Some(language) => ps
+                .find_syntax_by_token(language)
+                .ok_or_else(|| Error::msg(format!("Invalid language: {}", language)))?,
+            None => {
+                let first_line = self.code.lines().next().unwrap_or_default();
+                ps.find_syntax_by_first_line(first_line).unwrap_or_else(|| {
+                    // hyperpolyglot requires a file, so we need to create a temp file
+                    let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+                    write!(temp_file, "{}", self.code).unwrap();
+                    let language = hyperpolyglot::detect(temp_file.path()).unwrap();
+                    match language {
+                        Some(language) => ps.find_syntax_by_token(language.language()).unwrap(),
+                        None => ps.find_syntax_by_token("log").unwrap(),
+                    }
+                })
+            },
+        };
 
         Ok(language)
     }
@@ -122,7 +131,6 @@ impl Config {
                 .map_err(|e| Error::msg(format!("Invalid theme: {}", e)))
         }
     }
-
 
     pub fn get_formatter(&self) -> Result<ImageFormatter, Error> {
         let formatter = ImageFormatterBuilder::new()
@@ -157,8 +165,7 @@ impl Config {
 
 /// Query parameters for the /generate endpoint, using Option to make all options
 /// with defaults optional.
-#[derive(Debug, Clone)]
-#[derive(serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ConfigQuery {
     /// Background image URL
     pub background_image: Option<String>,
@@ -218,5 +225,5 @@ pub struct ConfigQuery {
     pub tab_width: Option<u8>,
 
     /// The syntax highlight theme. It can be a theme name or path to a .tmTheme file.
-    pub theme: Option<String>
+    pub theme: Option<String>,
 }

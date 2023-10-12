@@ -28,9 +28,6 @@ RUN ls -la
 RUN chmod +x download_nerd_fonts.sh
 RUN bash ./download_nerd_fonts.sh
 
-RUN mkdir -p /usr/share/fonts/truetype
-RUN mv *.ttf /usr/share/fonts/truetype
-
 FROM debian:buster-slim
 
 # Install dependencies
@@ -41,7 +38,7 @@ RUN apt-get update && apt-get install -y \
     fontconfig
 
 # Copy fonts
-COPY --from=fonts /usr/share/fonts/truetype /usr/share/fonts/truetype/
+COPY --from=fonts /data/fonts/nerd_fonts/* /usr/share/fonts/truetype/
 RUN fc-cache -fv
 
 # Copy binary
