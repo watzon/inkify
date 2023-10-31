@@ -7,6 +7,7 @@ use anyhow::Error;
 use lazy_static::lazy_static;
 use silicon as si;
 use silicon::utils::ToRgba;
+use tensorflow::Tensor;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::num::ParseIntError;
@@ -20,6 +21,7 @@ lazy_static! {
     static ref HIGHLIGHTING_ASSETS: si::assets::HighlightingAssets =
         silicon::assets::HighlightingAssets::new();
 }
+
 macro_rules! unwrap_or_return {
     ( $e:expr, $r:expr ) => {
         match $e {
@@ -87,6 +89,12 @@ async fn help() -> impl Responder {
           "GET /themes": "Return a list of available syntax themes.",
           "GET /languages": "Retuns a list of languages which can be parsed.",
           "GET /fonts": "Returns a list of available fonts.",
+          "GET /detect": {
+            "description": "Detect the language of the given code.",
+            "parameters": {
+                "code": "The code to detect the language of. Required."
+            }
+          },
           "GET /generate": {
             "description": "Generate an image from the given code.",
             "parameters": {
@@ -148,6 +156,59 @@ async fn fonts() -> impl Responder {
     let source = font_kit::source::SystemSource::new();
     let fonts = source.all_families().unwrap_or_default();
     HttpResponse::Ok().json(fonts)
+}
+
+#[get("/detect")]
+async fn detect(info: web::Query<config::ConfigQuery>) -> impl Responder {
+    let args = CliArgs::parse();
+    let ha = &*HIGHLIGHTING_ASSETS;
+
+    let (ps, _ts) = (&ha.syntax_set, &ha.theme_set);
+
+    let mut conf = config::Config::default();
+    conf.code = info.code.clone();
+    if conf.code.is_empty() {
+        return HttpResponse::BadRequest()
+            .append_header(("Content-Type", "application/json"))
+            .body(r#"{"error": "code parameter is required"}"#);
+    }
+
+    if args.tensorflow_model_dir.is_some() {
+        conf.load_tensorflow_model(args.tensorflow_model_dir.unwrap().as_str());
+    }
+
+    let input_data = Tensor::new(&[1]).with_values(&[conf.code.clone()]).unwrap();
+    let predictions = unwrap_or_return!(
+        conf.predict_language_with_tensorflow(ps, input_data),
+        HttpResponse::BadRequest()
+            .append_header(("Content-Type", "application/json"))
+            .body(r#"{"error": "Failed to detect language."}"#)
+    );
+
+    let mut sorted_predictions: Vec<_> = predictions.iter().collect();
+        sorted_predictions.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+
+    let min_score = predictions.iter().map(|(_, score)| *score).fold(f32::INFINITY, f32::min);
+    let max_score = predictions.iter().map(|(_, score)| *score).fold(f32::NEG_INFINITY, f32::max);
+
+    // Normalize scores and pick top 5
+    let mut normalized_predictions: Vec<_> = predictions.iter().map(|(lang, score)| {
+    let normalized_score = (score - min_score) / (max_score - min_score) * 100.0;
+    (lang, normalized_score)
+    }).collect();
+
+    normalized_predictions.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let response = normalized_predictions
+        .iter()
+        // .take(5)
+        .map(|(language, score)| format!("{{\"language\": \"{}\", \"score\": {}}}", language, score))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    HttpResponse::Ok()
+        .append_header(("Content-Type", "application/json"))
+        .body(format!("[{}]", response))
 }
 
 #[get("/generate")]
@@ -290,6 +351,7 @@ async fn main() -> std::io::Result<()> {
             .service(themes)
             .service(languages)
             .service(fonts)
+            .service(detect)
             .service(generate)
     })
     .bind((host.clone(), port.parse::<u16>().unwrap()))?

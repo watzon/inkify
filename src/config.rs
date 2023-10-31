@@ -1,4 +1,5 @@
 use anyhow::Error;
+use std::collections::HashMap;
 use silicon::formatter::{ImageFormatter, ImageFormatterBuilder};
 use silicon::utils::{Background, ShadowAdder};
 use std::path::PathBuf;
@@ -10,6 +11,15 @@ use crate::rgba::{ImageRgba, Rgba};
 
 type FontList = Vec<(String, f32)>;
 type Lines = Vec<u32>;
+
+macro_rules! unwrap_or_return {
+    ( $e:expr, $r:expr ) => {
+        match $e {
+            Ok(x) => x,
+            Err(_) => return $r,
+        }
+    };
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct Config {
@@ -132,15 +142,25 @@ impl Config {
                 ps.find_syntax_by_first_line(first_line).unwrap_or_else(|| {
                     // Try using tensorflow to detect the language
                     let input_data = Tensor::new(&[1]).with_values(&[self.code.clone()]).unwrap();
-                    self.predict_language_with_tensorflow(ps, input_data)
-                        .unwrap_or_else(|_| ps.find_syntax_by_token("log").unwrap())
+                    let predictions = self.predict_language_with_tensorflow(ps, input_data).unwrap();
+
+                    let mut max_score = -std::f32::INFINITY;
+                    let mut max_language = "log";
+                    for (language, score) in &predictions {  // Borrow predictions here
+                        if *score > max_score {
+                            max_score = *score;
+                            max_language = language;
+                        }
+                    }
+                    
+                    ps.find_syntax_by_token(max_language).unwrap_or_else(|| ps.find_syntax_by_token("log").unwrap())
                 })
             },
         };
         Ok(language)
     }
 
-    pub fn predict_language_with_tensorflow<'a>(&self, ps: &'a SyntaxSet, input_data: Tensor<String>) -> Result<&'a SyntaxReference, Error> {
+    pub fn predict_language_with_tensorflow<'a>(&self, ps: &'a SyntaxSet, input_data: Tensor<String>) -> Result<HashMap<String, f32>, Error> {
         if self.tf_model_graph.is_none() || self.tf_model.is_none() {
             return Err(Error::msg("TensorFlow model not loaded"));
         }
@@ -165,14 +185,14 @@ impl Config {
 
         let classes: Tensor<String> = args.fetch(output_token_classes)?;
 
-        // Find the index of the highest score
-        let max_index = scores.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
-        
+        let mut result: HashMap<String, f32> = HashMap::new();
+        for (i, score) in scores.iter().enumerate() {
+            let class = classes[i].clone();
+            let log_score = score.log2();
+            result.insert(class, log_score);
+        }
 
-        let language = &classes[max_index];
-        let language = ps.find_syntax_by_token(language).unwrap();
-
-        Ok(language)
+        Ok(result)
     }
     
 
