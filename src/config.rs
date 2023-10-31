@@ -1,17 +1,17 @@
 use anyhow::Error;
 use silicon::formatter::{ImageFormatter, ImageFormatterBuilder};
 use silicon::utils::{Background, ShadowAdder};
-use std::io::Write;
 use std::path::PathBuf;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use tensorflow::{Graph, SavedModelBundle, SessionOptions, Tensor};
 
 use crate::rgba::{ImageRgba, Rgba};
 
 type FontList = Vec<(String, f32)>;
 type Lines = Vec<u32>;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct Config {
     /// Background image URL
     pub background_image: Option<Vec<u8>>,
@@ -72,6 +72,12 @@ pub struct Config {
 
     /// The syntax highlight theme. It can be a theme name or path to a .tmTheme file.
     pub theme: String,
+
+    #[serde(skip_deserializing)]
+    pub tf_model_graph: Option<Graph>,
+    
+    #[serde(skip_deserializing)]
+    pub tf_model: Option<SavedModelBundle>,
 }
 
 impl Config {
@@ -97,7 +103,23 @@ impl Config {
             shadow_offset_x: 0,
             tab_width: 4,
             theme: "Dracula".to_owned(),
+            tf_model_graph: None,
+            tf_model: None,
         }
+    }
+
+    pub fn load_tensorflow_model(&mut self, export_dir: &str) {
+        let mut graph = Graph::new();
+        let model = match SavedModelBundle::load(&SessionOptions::new(), &["serve"], &mut graph, export_dir) {
+            Ok(model) => model,
+            Err(e) => {
+                eprintln!("Failed to load TensorFlow model: {}", e);
+                return;
+            }
+        };
+
+        self.tf_model = Some(model);
+        self.tf_model_graph = Some(graph);
     }
 
     pub fn language<'a>(&self, ps: &'a SyntaxSet) -> Result<&'a SyntaxReference, Error> {
@@ -108,20 +130,51 @@ impl Config {
             None => {
                 let first_line = self.code.lines().next().unwrap_or_default();
                 ps.find_syntax_by_first_line(first_line).unwrap_or_else(|| {
-                    // hyperpolyglot requires a file, so we need to create a temp file
-                    let mut temp_file = tempfile::NamedTempFile::new().unwrap();
-                    write!(temp_file, "{}", self.code).unwrap();
-                    let language = hyperpolyglot::detect(temp_file.path()).unwrap();
-                    match language {
-                        Some(language) => ps.find_syntax_by_token(language.language()).unwrap(),
-                        None => ps.find_syntax_by_token("log").unwrap(),
-                    }
+                    // Try using tensorflow to detect the language
+                    let input_data = Tensor::new(&[1]).with_values(&[self.code.clone()]).unwrap();
+                    self.predict_language_with_tensorflow(ps, input_data)
+                        .unwrap_or_else(|_| ps.find_syntax_by_token("log").unwrap())
                 })
             },
         };
+        Ok(language)
+    }
+
+    pub fn predict_language_with_tensorflow<'a>(&self, ps: &'a SyntaxSet, input_data: Tensor<String>) -> Result<&'a SyntaxReference, Error> {
+        if self.tf_model_graph.is_none() || self.tf_model.is_none() {
+            return Err(Error::msg("TensorFlow model not loaded"));
+        }
+
+        let graph = self.tf_model_graph.as_ref().unwrap();
+        let model = self.tf_model.as_ref().unwrap();
+        let mut args = tensorflow::SessionRunArgs::new();
+
+        let input_tensor = graph.operation_by_name_required("Placeholder")?;
+
+        let output_tensor_scores = graph.operation_by_name_required("head/predictions/probabilities")?;
+
+        let output_tensor_classes = graph.operation_by_name_required("head/Tile")?;
+
+        args.add_feed(&input_tensor, 0, &input_data);
+        let output_token_scores = args.request_fetch(&output_tensor_scores, 0);
+        let output_token_classes = args.request_fetch(&output_tensor_classes, 0);
+
+        model.session.run(&mut args)?;
+
+        let scores: Tensor<f32> = args.fetch(output_token_scores)?;
+
+        let classes: Tensor<String> = args.fetch(output_token_classes)?;
+
+        // Find the index of the highest score
+        let max_index = scores.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+        
+
+        let language = &classes[max_index];
+        let language = ps.find_syntax_by_token(language).unwrap();
 
         Ok(language)
     }
+    
 
     pub fn theme(&self, ts: &ThemeSet) -> Result<Theme, Error> {
         if let Some(theme) = ts.themes.get(&self.theme) {

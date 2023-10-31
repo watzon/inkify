@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate anyhow;
 
+use clap::Parser;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use anyhow::Error;
 use lazy_static::lazy_static;
@@ -26,6 +27,13 @@ macro_rules! unwrap_or_return {
             Err(_) => return $r,
         }
     };
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct CliArgs {
+    #[arg(short, long)]
+    tensorflow_model_dir: Option<String>,
 }
 
 fn parse_font_str(s: &str) -> Vec<(String, f32)> {
@@ -144,6 +152,7 @@ async fn fonts() -> impl Responder {
 
 #[get("/generate")]
 async fn generate(info: web::Query<config::ConfigQuery>) -> impl Responder {
+    let args = CliArgs::parse();
     let ha = &*HIGHLIGHTING_ASSETS;
 
     let (ps, ts) = (&ha.syntax_set, &ha.theme_set);
@@ -154,6 +163,10 @@ async fn generate(info: web::Query<config::ConfigQuery>) -> impl Responder {
         return HttpResponse::BadRequest()
             .append_header(("Content-Type", "application/json"))
             .body(r#"{"error": "code parameter is required"}"#);
+    }
+
+    if args.tensorflow_model_dir.is_some() {
+        conf.load_tensorflow_model(args.tensorflow_model_dir.unwrap().as_str());
     }
 
     conf.language = info.language.clone();
@@ -227,6 +240,7 @@ async fn generate(info: web::Query<config::ConfigQuery>) -> impl Responder {
             .append_header(("Content-Type", "application/json"))
             .body(r#"{"error": "Unable to determine language, please provide one explicitly"}"#)
     );
+
     let theme = unwrap_or_return!(
         conf.theme(ts),
         HttpResponse::BadRequest()
