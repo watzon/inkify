@@ -37,6 +37,10 @@ The index route is used as a help/ping route. It will always return a 200 respon
 
 The generate route is used to generate images. It takes the arguments listed above as query parameters, and returns a PNG image.
 
+#### `GET /detect`
+
+The detect route is used to detect the language of a code snippet. It takes a single argument, `code`, which is the code to detect the language of. It returns a sorted list of languages, along with the confidence of the detection (as a number between 0 and 100).
+
 #### `GET /themes`
 
 The themes route is used to get a list of available themes. It takes no arguments, and returns a JSON object containing a list of themes.
